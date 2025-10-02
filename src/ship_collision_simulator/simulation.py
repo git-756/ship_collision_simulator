@@ -21,6 +21,8 @@ class ShipSimulation:
         # 物理ワールドの設定
         p.setGravity(0, 0, self.gravity, physicsClientId=self.client)
         p.setTimeStep(self.time_step, physicsClientId=self.client)
+        # 接触ソルバーの反復回数を増やすことで、Stiffness/Dampingの計算精度を上げる
+        p.setPhysicsEngineParameter(numSolverIterations=150, physicsClientId=self.client)
 
         # オブジェクトIDと状態変数を初期化
         self.plane_id = None
@@ -71,54 +73,47 @@ class ShipSimulation:
                                          basePosition=wall_start_pos,
                                          physicsClientId=self.client)
 
-        # 衝突プロパティの設定（ゴムの表現）
-        p.changeDynamics(self.boat_id, -1, lateralFriction=0.3, restitution=0.1, physicsClientId=self.client)
-        p.changeDynamics(self.wall_id, -1, lateralFriction=0.5, restitution=0.8, physicsClientId=self.client)
+        # 衝突プロパティの設定（レクタングラーダンパーをモデル化）
+        p.changeDynamics(self.boat_id, -1, 
+                         lateralFriction=0.3, 
+                         restitution=0.01, # 反発はほぼ無くし、Stiffness/Dampingで制御
+                         contactStiffness=20000, # [調整パラメータ] スプリングの硬さ
+                         contactDamping=1000)    # [調整パラメータ] ダンパーの粘り気
+                         
+        p.changeDynamics(self.wall_id, -1, 
+                         lateralFriction=0.5, 
+                         restitution=0.8,
+                         contactStiffness=100000, # 壁は非常に硬く設定
+                         contactDamping=1000)
         
         # 浮力が重力と釣り合うように設定
         self.buoyancy_force = self.boat_mass * abs(self.gravity)
         
         # 抵抗計算に使うパラメータを設定
-        # 前方投影面積 (幅 * 水中での高さ)。ここでは船の高さの半分が沈んでいると仮定
         width = boat_half_extents[1] * 2
         submerged_height = boat_half_extents[2] 
         self.frontal_area = width * submerged_height
 
         # 3m/sで進む際の水の抵抗と釣り合う推力を計算
         target_velocity = 3.0
-        # 抵抗力の計算式: F_d = 0.5 * ρ * v^2 * C_d * A
         drag_force_at_target_speed = 0.5 * self.water_density * (target_velocity**2) * self.drag_coefficient * self.frontal_area
         
         self.thrust_force = drag_force_at_target_speed
         print(f"INFO: 3m/sを維持するための推力を {self.thrust_force:.2f} N に設定しました。")
 
     def step(self):
-        # ステップを進める直前の速度を記録
         vel, _ = p.getBaseVelocity(self.boat_id, physicsClientId=self.client)
         self.last_velocity = np.array(vel)
-        
-        # 海の影響（浮力、推力、抵抗）を適用
         self.apply_ocean_effects()
-        
-        # 物理シミュレーションを1ステップ進める
         p.stepSimulation(physicsClientId=self.client)
-        
-        # 衝突の検出と衝撃の計算
         self.check_collision()
 
     def apply_ocean_effects(self):
         pos, _ = p.getBasePositionAndOrientation(self.boat_id, physicsClientId=self.client)
         vel, _ = p.getBaseVelocity(self.boat_id, physicsClientId=self.client)
-
-        # 1. 浮力 (常に上向きに作用)
         p.applyExternalForce(self.boat_id, -1, [0, 0, self.buoyancy_force], pos, p.WORLD_FRAME, physicsClientId=self.client)
-        
-        # 2. 推力 (常に前向きに作用)
         p.applyExternalForce(self.boat_id, -1, [self.thrust_force, 0, 0], pos, p.WORLD_FRAME, physicsClientId=self.client)
-
-        # 3. 水の抵抗 (現在の速度に応じて変化)
         drag_force_magnitude = 0.5 * self.water_density * (vel[0]**2) * self.drag_coefficient * self.frontal_area
-        
         drag_force_direction = -1.0 if vel[0] > 0 else 1.0
         drag_force = [drag_force_magnitude * drag_force_direction, 0, 0]
         p.applyExternalForce(self.boat_id, -1, drag_force, pos, p.WORLD_FRAME, physicsClientId=self.client)
@@ -129,51 +124,29 @@ class ShipSimulation:
             if contact_points:
                 total_impulse = 0
                 for point in contact_points:
-                    total_impulse += point[9] # appliedImpulse
+                    total_impulse += point[9]
                 
                 if total_impulse > 0:
                     print(f"衝突を検出！ 合計インパルス: {total_impulse:.4f} Ns")
-                    
                     vel_after, _ = p.getBaseVelocity(self.boat_id, physicsClientId=self.client)
                     vel_after = np.array(vel_after)
-
                     speed_before_sq = np.dot(self.last_velocity, self.last_velocity)
                     speed_after_sq = np.dot(vel_after, vel_after)
-
                     energy_before = 0.5 * self.boat_mass * speed_before_sq
                     energy_after = 0.5 * self.boat_mass * speed_after_sq
-                    
                     self.lost_kinetic_energy = energy_before - energy_after
-
                     print(f"  - 衝突直前の運動エネルギー: {energy_before:.2f} J")
                     print(f"  - 衝突直後の運動エネルギー: {energy_after:.2f} J")
                     print(f"  - 衝突で失われたエネルギー: {self.lost_kinetic_energy:.2f} J (ジュール)")
-                    
                     self.collided = True
 
     def get_camera_image(self, width=640, height=480):
+        # --- ▼▼▼ ここが修正箇所です ▼▼▼ ---
         boat_pos, _ = p.getBasePositionAndOrientation(self.boat_id, physicsClientId=self.client)
-        
-        view_matrix = p.computeViewMatrix(
-            cameraEyePosition=[boat_pos[0] - 5, 5, 3],
-            cameraTargetPosition=boat_pos,
-            cameraUpVector=[0, 0, 1],
-            physicsClientId=self.client)
-        
-        proj_matrix = p.computeProjectionMatrixFOV(
-            fov=60,
-            aspect=width / height,
-            nearVal=0.1,
-            farVal=100,
-            physicsClientId=self.client)
-        
-        _, _, rgba_img, _, _ = p.getCameraImage(
-            width, height,
-            viewMatrix=view_matrix,
-            projectionMatrix=proj_matrix,
-            renderer=p.ER_BULLET_HARDWARE_OPENGL,
-            physicsClientId=self.client)
-        
+        # --- ▲▲▲ ここが修正箇所です ▲▲▲ ---
+        view_matrix = p.computeViewMatrix(cameraEyePosition=[boat_pos[0] - 5, 5, 3], cameraTargetPosition=boat_pos, cameraUpVector=[0, 0, 1], physicsClientId=self.client)
+        proj_matrix = p.computeProjectionMatrixFOV(fov=60, aspect=width / height, nearVal=0.1, farVal=100, physicsClientId=self.client)
+        _, _, rgba_img, _, _ = p.getCameraImage(width, height, viewMatrix=view_matrix, projectionMatrix=proj_matrix, renderer=p.ER_BULLET_HARDWARE_OPENGL, physicsClientId=self.client)
         return rgba_img
 
     def close(self):
