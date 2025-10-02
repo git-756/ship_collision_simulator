@@ -10,6 +10,8 @@
 #   universal: false
 
 -e file:.
+numpy==2.2.6
+    # via ship-collision-simulator
 pybullet==3.2.7
     # via ship-collision-simulator
 pyside6==6.8.0.2
