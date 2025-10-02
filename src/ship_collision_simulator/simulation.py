@@ -78,9 +78,14 @@ class ShipSimulation:
         p.changeDynamics(self.boat_id, -1, lateralFriction=0.3, restitution=0.1, physicsClientId=self.client)
         p.changeDynamics(self.wall_id, -1, lateralFriction=0.5, restitution=0.8, physicsClientId=self.client)
         
+        # 変更＜浮力変更＞ 
         # 船の水中体積を計算 (簡易的に全体の半分とする)
-        self.boat_volume_submerged = (boat_half_extents[0]*2) * (boat_half_extents[1]*2) * (boat_half_extents[2])
-        self.buoyancy_force = self.water_density * abs(self.gravity) * self.boat_volume_submerged
+        # self.boat_volume_submerged = (boat_half_extents[0]*2) * (boat_half_extents[1]*2) * (boat_half_extents[2])
+        # self.buoyancy_force = self.water_density * abs(self.gravity) * self.boat_volume_submerged
+
+        # 【変更後】
+        # 浮力が重力と釣り合うように設定
+        self.buoyancy_force = self.boat_mass * abs(self.gravity)
 
     def step(self):
         # --- ▼▼▼ ここから追加 ▼▼▼ ---
