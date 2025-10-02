@@ -1,6 +1,7 @@
 import pybullet as p
 import pybullet_data
 import time
+import numpy as np # NumPyをインポート
 
 class ShipSimulation:
     def __init__(self):
@@ -29,10 +30,16 @@ class ShipSimulation:
         self.wall_id = None
         self.collided = False
         
+        # --- ▼▼▼ ここから追加 ▼▼▼ ---
+        self.last_velocity = np.array([0.0, 0.0, 0.0])
+        self.lost_kinetic_energy = None # 失われた運動エネルギー
+        # --- ▲▲▲ ここまで追加 ▲▲▲ ---
+
         # ワールドの作成
         self.create_world()
 
     def create_world(self):
+        # (この関数の中身は変更ありません)
         # 地面（海面）を作成
         self.plane_id = p.loadURDF("plane.urdf", physicsClientId=self.client)
 
@@ -52,6 +59,7 @@ class ShipSimulation:
         
         # 船に初期速度を与える
         p.resetBaseVelocity(self.boat_id, linearVelocity=self.boat_initial_velocity, physicsClientId=self.client)
+        self.last_velocity = np.array(self.boat_initial_velocity) # 初期速度をセット
 
         # 壁の形状とプロパティ
         wall_half_extents = [0.1, 2, 1]
@@ -67,8 +75,6 @@ class ShipSimulation:
                                          physicsClientId=self.client)
 
         # 衝突プロパティの設定（ゴムの表現）
-        # restitution: 反発係数 (0に近いほど反発しない)
-        # lateralFriction: 横摩擦係数
         p.changeDynamics(self.boat_id, -1, lateralFriction=0.3, restitution=0.1, physicsClientId=self.client)
         p.changeDynamics(self.wall_id, -1, lateralFriction=0.5, restitution=0.8, physicsClientId=self.client)
         
@@ -77,6 +83,12 @@ class ShipSimulation:
         self.buoyancy_force = self.water_density * abs(self.gravity) * self.boat_volume_submerged
 
     def step(self):
+        # --- ▼▼▼ ここから追加 ▼▼▼ ---
+        # ステップを進める直前の速度を記録
+        vel, _ = p.getBaseVelocity(self.boat_id, physicsClientId=self.client)
+        self.last_velocity = np.array(vel)
+        # --- ▲▲▲ ここまで追加 ▲▲▲ ---
+        
         # 海の影響を適用
         self.apply_ocean_effects()
         
@@ -87,6 +99,7 @@ class ShipSimulation:
         self.check_collision()
 
     def apply_ocean_effects(self):
+        # (この関数の中身は変更ありません)
         pos, _ = p.getBasePositionAndOrientation(self.boat_id, physicsClientId=self.client)
         vel, _ = p.getBaseVelocity(self.boat_id, physicsClientId=self.client)
 
@@ -94,7 +107,6 @@ class ShipSimulation:
         p.applyExternalForce(self.boat_id, -1, [0, 0, self.buoyancy_force], pos, p.WORLD_FRAME, physicsClientId=self.client)
         
         # 2. 水の抵抗 (速度の2乗に比例するとして簡易計算)
-        # C_d: 抵抗係数 (形状による), A: 前方投影面積
         C_d = 0.8
         A = (0.4 * 2) * 0.2 
         drag_force_magnitude = 0.5 * self.water_density * (vel[0]**2) * C_d * A
@@ -108,15 +120,35 @@ class ShipSimulation:
             if contact_points:
                 total_impulse = 0
                 for point in contact_points:
-                    # normalForceは持続的な力, appliedImpulseは衝突の力積
                     total_impulse += point[9] # appliedImpulse
                 
                 if total_impulse > 0:
                     print(f"衝突を検出！ 合計インパルス: {total_impulse:.4f} Ns")
-                    self.collided = True # 一度検出したら再度表示しない
+                    
+                    # --- ▼▼▼ ここから追加 ▼▼▼ ---
+                    # 衝突直後の速度を取得
+                    vel_after, _ = p.getBaseVelocity(self.boat_id, physicsClientId=self.client)
+                    vel_after = np.array(vel_after)
+
+                    # 衝突直前と直後の速度の大きさ(速さ)の2乗を計算
+                    speed_before_sq = np.dot(self.last_velocity, self.last_velocity)
+                    speed_after_sq = np.dot(vel_after, vel_after)
+
+                    # 運動エネルギーを計算
+                    energy_before = 0.5 * self.boat_mass * speed_before_sq
+                    energy_after = 0.5 * self.boat_mass * speed_after_sq
+                    
+                    self.lost_kinetic_energy = energy_before - energy_after
+
+                    print(f"  - 衝突直前の運動エネルギー: {energy_before:.2f} J")
+                    print(f"  - 衝突直後の運動エネルギー: {energy_after:.2f} J")
+                    print(f"  - 衝突で失われたエネルギー: {self.lost_kinetic_energy:.2f} J (ジュール)")
+                    # --- ▲▲▲ ここまで追加 ▲▲▲ ---
+
+                    self.collided = True # 一度検出したら再度計算しない
 
     def get_camera_image(self, width=640, height=480):
-        # 船の位置を取得してカメラのターゲットにする
+        # (この関数の中身は変更ありません)
         boat_pos, _ = p.getBasePositionAndOrientation(self.boat_id, physicsClientId=self.client)
         
         view_matrix = p.computeViewMatrix(
